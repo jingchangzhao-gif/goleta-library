@@ -49,9 +49,9 @@ class CliTests(unittest.TestCase):
     def test_json_is_human_readable_utf8(self) -> None:
         self.run_cli("add-copy", "C1", "三体", "刘慈欣")
         data = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(data["schema_version"], 2)
         self.assertEqual(data["copies"]["C1"]["title"], "三体")
 
 
 if __name__ == "__main__":
     unittest.main()
-

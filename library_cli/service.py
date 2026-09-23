@@ -3,6 +3,7 @@ from datetime import date
 from typing import Any
 
 from .errors import ValidationError
+from .isbn import compact_isbn, normalize_isbn
 
 MAX_ACTIVE_LOANS = 5
 
@@ -25,16 +26,25 @@ def parse_date(value: str, label: str) -> str:
 
 
 def add_copy(
-    data: dict[str, Any], copy_id: str, title: str, author: str
+    data: dict[str, Any],
+    copy_id: str,
+    title: str,
+    author: str,
+    isbn: str | None = None,
 ) -> dict[str, Any]:
     copy_id = _required(copy_id, "副本编号")
     title = _required(title, "书名")
     author = _required(author, "作者")
     if copy_id in data["copies"]:
         raise ValidationError(f"副本 {copy_id} 已存在")
+    normalized_isbn = normalize_isbn(isbn) if isbn is not None else None
 
     updated = deepcopy(data)
-    updated["copies"][copy_id] = {"title": title, "author": author}
+    updated["copies"][copy_id] = {
+        "title": title,
+        "author": author,
+        "isbn": normalized_isbn,
+    }
     return updated
 
 
@@ -126,6 +136,7 @@ def list_copies(data: dict[str, Any], status: str) -> list[dict[str, str]]:
                 "copy_id": copy_id,
                 "title": copy_data["title"],
                 "author": copy_data["author"],
+                "isbn": copy_data.get("isbn") or "-",
                 "status": copy_status,
                 "reader_id": loan["reader_id"] if loan else "-",
                 "borrowed_on": loan["borrowed_on"] if loan else "-",
@@ -137,12 +148,50 @@ def list_copies(data: dict[str, Any], status: str) -> list[dict[str, str]]:
 def search_copies(
     data: dict[str, Any], query: str, field: str
 ) -> list[dict[str, str]]:
-    query = _required(query, "搜索词").casefold()
+    query = _required(query, "搜索词")
+    text_query = query.casefold()
+    isbn_query = compact_isbn(query)
+    if field == "isbn" and not isbn_query:
+        raise ValidationError("ISBN 搜索词不能为空")
     rows = list_copies(data, "all")
     return [
         row
         for row in rows
-        if (field in ("all", "title") and query in row["title"].casefold())
-        or (field in ("all", "author") and query in row["author"].casefold())
+        if (field in ("all", "title") and text_query in row["title"].casefold())
+        or (field in ("all", "author") and text_query in row["author"].casefold())
+        or (
+            field in ("all", "isbn")
+            and bool(isbn_query)
+            and row["isbn"] != "-"
+            and isbn_query in row["isbn"]
+        )
     ]
 
+
+def loan_history(
+    data: dict[str, Any], reader_id: str | None, status: str
+) -> list[dict[str, str]]:
+    if reader_id is not None and reader_id not in data["readers"]:
+        raise ValidationError(f"读者 {reader_id} 不存在")
+    if status not in ("all", "active", "returned"):
+        raise ValidationError(f"未知借阅状态：{status}")
+
+    rows = []
+    for loan in data["loans"]:
+        if reader_id is not None and loan["reader_id"] != reader_id:
+            continue
+        is_active = loan["returned_on"] is None
+        if status == "active" and not is_active:
+            continue
+        if status == "returned" and is_active:
+            continue
+        rows.append(
+            {
+                "copy_id": loan["copy_id"],
+                "reader_id": loan["reader_id"],
+                "borrowed_on": loan["borrowed_on"],
+                "returned_on": loan["returned_on"] or "-",
+            }
+        )
+    rows.sort(key=lambda row: row["borrowed_on"])
+    return rows
