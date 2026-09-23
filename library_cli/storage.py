@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 from copy import deepcopy
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,24 @@ from .errors import StorageError, ValidationError
 from .isbn import normalize_isbn
 
 CURRENT_SCHEMA_VERSION = 2
+
+
+def _validate_loan_date(
+    value: str, field_name: str, loan_number: int, path: Path
+) -> str:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise StorageError(
+            f"数据文件 {path} 第 {loan_number} 条借阅记录的 {field_name} "
+            "不是有效的 YYYY-MM-DD 日期"
+        ) from exc
+    if parsed.isoformat() != value:
+        raise StorageError(
+            f"数据文件 {path} 第 {loan_number} 条借阅记录的 {field_name} "
+            "不是严格的 YYYY-MM-DD 日期"
+        )
+    return value
 
 
 def empty_library() -> dict[str, Any]:
@@ -73,7 +92,7 @@ def _validate_library(data: object, path: Path) -> dict[str, Any]:
             raise StorageError(f"数据文件 {path} 中读者 {reader_id} 的字段无效")
 
     active_copies: set[str] = set()
-    for loan in loans:
+    for loan_number, loan in enumerate(loans, start=1):
         if not isinstance(loan, dict):
             raise StorageError(f"数据文件 {path} 包含无效的借阅记录")
         copy_id = loan.get("copy_id")
@@ -89,6 +108,18 @@ def _validate_library(data: object, path: Path) -> dict[str, Any]:
             or (returned_on is not None and not isinstance(returned_on, str))
         ):
             raise StorageError(f"数据文件 {path} 包含字段无效的借阅记录")
+        borrowed_on = _validate_loan_date(
+            borrowed_on, "borrowed_on", loan_number, path
+        )
+        if returned_on is not None:
+            returned_on = _validate_loan_date(
+                returned_on, "returned_on", loan_number, path
+            )
+            if returned_on < borrowed_on:
+                raise StorageError(
+                    f"数据文件 {path} 第 {loan_number} 条借阅记录的归还日期"
+                    "早于借阅日期"
+                )
         if returned_on is None:
             if copy_id in active_copies:
                 raise StorageError(f"数据文件 {path} 中副本 {copy_id} 有多条未归还记录")
